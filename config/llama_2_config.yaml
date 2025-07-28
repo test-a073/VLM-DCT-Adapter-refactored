@@ -1,0 +1,59 @@
+models:
+  name: meta-llama/Llama-2-7b-chat-hf
+
+adapter:
+  do_adapt: true              # Enables adapter injection
+  do_peft: false              # No PEFT used
+  name: MyCustomAdapter
+  params:
+    in_features: 4096         # Adapter input dimension
+    reduction_factor: 16      # Matches adapter_params_json in your script
+  perform_adapter_training: true # Enable training after adapter injection
+  layers:
+    - name: model.layers.31.self_attn.q_proj
+    - name: model.layers.30.self_attn.q_proj
+    - name: model.layers.29.self_attn.q_proj
+    - name: model.layers.28.self_attn.q_proj
+    - name: model.layers.27.self_attn.q_proj
+    - name: model.layers.26.self_attn.q_proj
+    - name: model.layers.25.self_attn.q_proj
+    - name: model.layers.24.self_attn.q_proj
+    - name: model.layers.23.self_attn.q_proj
+    - name: model.layers.22.self_attn.q_proj
+
+train:
+  do_train: true              # Enables adapter training
+  perform_full_finetune: true
+  num_epochs: 10
+  batch_size: 10 # 10 was working
+  lr: 0.0001
+  num_workers: 0
+  dataset_path: evaluator/benchmark_datasets/new_datasamples.jsonl
+  num_train_samples: -1
+
+
+eval:
+  dataset_path: evaluator/benchmark_datasets/mtbench101_original.jsonl
+  num_eval_samples: -1 # -1 for entire dataset
+  
+  output_dir: output/eval_results_injection
+  evaluator_type: GenericLLMEvaluator
+  judge_model_name: gpt-4
+  judge_system_prompt: null
+
+generation:
+  max_new_tokens: 512
+  
+  
+  max_seq_length: 1024
+
+openai:
+  config_path: evaluator/openai_config.yaml
+
+save:
+  model_save_path: output/
+
+evaluator: 
+  evaluator_type : GenericLLMEvaluator
+  judge_model_name: gpt-4
+  judge_system_prompt: None
