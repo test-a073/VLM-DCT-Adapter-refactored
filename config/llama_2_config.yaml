@@ -7,19 +7,14 @@ adapter:
   name: MyCustomAdapter
   params:
     in_features: 4096         # Adapter input dimension
-    reduction_factor: 16      # Matches adapter_params_json in your script
+    # reduction_factor: 16      # Matches adapter_params_json in your script
   perform_adapter_training: true # Enable training after adapter injection
   layers:
     - name: model.layers.31.self_attn.q_proj
-    - name: model.layers.30.self_attn.q_proj
-    - name: model.layers.29.self_attn.q_proj
-    - name: model.layers.28.self_attn.q_proj
-    - name: model.layers.27.self_attn.q_proj
-    - name: model.layers.26.self_attn.q_proj
-    - name: model.layers.25.self_attn.q_proj
-    - name: model.layers.24.self_attn.q_proj
-    - name: model.layers.23.self_attn.q_proj
-    - name: model.layers.22.self_attn.q_proj
+    - name: model.layers.31.self_attn.k_proj
+    - name: model.layers.31.self_attn.v_proj
+    - name: model.layers.31.self_attn.o_proj
+
 
 train:
   do_train: true              # Enables adapter training

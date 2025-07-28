@@ -4,25 +4,26 @@ import json
 import os
 import yaml
 import logging
-import re
-from typing import Dict, Any, List, Optional
+from datasets import Dataset
+import sys
+import gc
+
 
 import torch
+from prettyprinter import pprint
+
 # from datasets import load_dataset, Dataset, DatasetDict
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from tqdm import tqdm
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # Set to the GPU you want to use, or leave empty for all available GPUs
-
-from evaluator.generic_evaluator import GenericLLMEvaluator
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"  # Set to the GPU you want to use, or leave empty for all available GPUs
 # from evaluator.cascade_evaluator import CascadeEvaluator # If needed
 
 # # Import for Adapter
 from adapter.adapter import DCTAdapter # Assuming DCTAdapter is in adapter/adapter.py
 from adapter.adapter_helper_functions import inject_adapters, get_parent_module
 from runner.train import train_model, freeze_model_except_adapters
-from runner.train import train_model_mistral , train_model_adapted_mistral, generate_predictions_for_original_model
+from runner.train import train_model_mistral , train_model_adapted_mistral, generate_predictions_for_original_model, train_model_adapted_llama_2
     
 
 from utils.helper_functions import load_openai_config, simple_text_summarizer_postprocessor, generate_predictions, run_evaluation_pipeline
@@ -41,7 +42,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # --- Main Script Logic ---
-def main():
+def main(DEBUG=False):
 
     # Load the layers to train
     import yaml
@@ -50,11 +51,10 @@ def main():
     with open(model_config_file_path, 'r') as f:
         config_data = yaml.safe_load(f)
 
-    print("Config data", config_data)
+    pprint("Config data")
+    pprint( config_data)
 
     parser = argparse.ArgumentParser(description="Evaluate original and adapted LLM models.")
-    parser.add_argument("--perform_full_finetune", action='store_true', help="Enable full fine-tuning of the original model.")
-
     args = parser.parse_args()
     
     args.model_name = config_data.get("models").get("name")
@@ -65,7 +65,7 @@ def main():
     args.max_new_tokens = config_data.get("generation").get("max_new_tokens")
 
 
-    args.eval_output_dir = config_data.get("eval").get("dataset_path")
+    args.eval_output_dir = config_data.get("eval").get("output_dir")
     args.openai_config_path = config_data.get("openai").get("config_path")
 
     args.evaluator_type = config_data.get("evaluator").get("evaluator_type")
@@ -96,25 +96,29 @@ def main():
     os.makedirs(args.eval_output_dir, exist_ok=True)
 
     # Load and prepare train_dataset
-    logger.info(f"Loading training dataset from {args.train_dataset_path}...")
+    print(f"Loading training dataset from {args.train_dataset_path}...")
     try:
         train_dataset_list = []
         with open(args.train_dataset_path, 'r') as f:
             for line in f:
                 train_dataset_list.append(json.loads(line))
         
-        if args.num_train_samples != -1 and args.num_train_samples < len(train_dataset_list):
+        if args.num_train_samples != -1 and args.num_train_samples < len(train_dataset_list): # If only fraction of train dataset is used
             train_dataset_list = train_dataset_list[:args.num_train_samples]
-        
+
         train_dataset = Dataset.from_list(train_dataset_list)
-        logger.info(f"Training dataset loaded. Samples: {len(train_dataset)}")
+        if DEBUG:
+            print("[Train dataset]", train_dataset)
+            print("[One sample from train dataset]")
+            print(train_dataset[0])
+        print(f"Training dataset loaded. Samples: {len(train_dataset)}")
 
     except Exception as e:
-        logger.error(f"Error loading training dataset: {e}", exc_info=True)
+        print(f"Error loading training dataset: {e}")
         return
 
     # Load and prepare eval_dataset
-    logger.info(f"Loading evaluation dataset from {args.eval_dataset_path}...")
+    print(f"Loading evaluation dataset from {args.eval_dataset_path}...")
     try:
         eval_dataset_list = []
         with open(args.eval_dataset_path, 'r') as f:
@@ -125,53 +129,84 @@ def main():
             eval_dataset_list = eval_dataset_list[:args.num_eval_samples]
 
         eval_dataset = Dataset.from_list(eval_dataset_list)
-        logger.info(f"Evaluation dataset loaded. Samples: {len(eval_dataset)}")
+
+        if DEBUG:
+            print("[Eval dataset]", eval_dataset)
+            print("[One sample from eval dataset]")
+            print(eval_dataset[0])
+        print(f"Evaluation dataset loaded. Samples: {len(eval_dataset)}")
 
     except Exception as e:
-        logger.error(f"Error loading evaluation dataset: {e}", exc_info=True)
+        print(f"Error loading evaluation dataset: {e}")
         return
 
     # 2. Load Tokenizer (shared for both models)
     try:
         if args.model_name in ["meta-llama/Llama-2-7b-chat-hf"]:
             tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token # Set pad token if not present
-            logger.info(f"Tokenizer pad_token was None, set to eos_token: {tokenizer.eos_token}")
+            if DEBUG:
+                print(f"Tokenizer is loaded")
     except Exception as e:
-        logger.error(f"Failed to load tokenizer for {args.model_name}: {e}", exc_info=True)
+        print(f"Failed to load tokenizer for {args.model_name}: {e}")
         raise e
+    
         
     # --- Adapter Injection and Evaluation for Adapted Model ---
-    logger.info(f"--- Starting Evaluation for Adapted Model: {args.model_name} + Adapter ---")
+    print(f"--- Starting Evaluation for Adapted Model: {args.model_name} + Adapter ---")
     adapted_model = None 
     original_model = None
     model_for_adapted_eval_name = args.model_name 
     
     try:
         if args.do_adapter_injection:
-            logger.info(f"Loading base model ({args.model_name}) for adapter injection...")
+            print(f"Loading base model ({args.model_name}) for adapter injection...")
             # original_model = AutoModelForCausalLM.from_pretrained(args.model_name)
 
-            adapted_model = AutoModelForCausalLM.from_pretrained(args.model_name)
-            original_model = adapted_model  # Use the same model for training and evaluation
-            # original_model = AutoModelForCausalLM.from_pretrained(args.model_name) # Keep a reference to the original model
-            # original_model = adapted_model  # Use the same model for training and evaluation
-            model_for_adapted_eval_name = f"{args.model_name}_adapted"
-            model_arch_path = os.path.join(args.eval_output_dir, f"{args.model_save_path}/model_archi_{args.model_name}.txt")
+            torch.cuda.empty_cache()
+            gc.collect()
+            original_model = AutoModelForCausalLM.from_pretrained(
+                args.model_name,
+                torch_dtype=torch.float16, 
+                device_map="cuda"
+                ).eval()
+            adapted_model = AutoModelForCausalLM.from_pretrained(
+                args.model_name,
+                torch_dtype=torch.float16, 
+                device_map="cuda"
+                ) 
+            if DEBUG: 
+                print("> Model loaded")
+            model_name_  = args.model_name.split("/")[1] # model name without organization name
+            
+            model_for_adapted_eval_name = f"{model_name_}_adapted"
+            model_arch_path = os.path.join(args.model_save_path, f"{model_name_}_architecture.txt")
             try:
                 with open(model_arch_path, 'w') as f:
                     f.write(str(adapted_model))
-                logger.info(f"Model architecture written to {model_arch_path}")
+                if DEBUG:
+                    print(f"Model architecture written to {model_arch_path}")
             except Exception as e:
-                logger.error(f"Failed to write model architecture: {e}")
+                print(f"Failed to write model architecture: {e}")
             
             try: 
-                adapted_model = inject_adapters(adapted_model, DCTAdapter, config['adapter']['params'], config['adapter']['layers'])
-                logger.info("Adapter injection process finished.")
+                if DEBUG:
+                    print(f"{args.adapter_layers_json=}")
+                    print(f"{args.adapter_params_json=}")
+                    
+                adapted_model = inject_adapters(
+                    adapted_model, 
+                    DCTAdapter, 
+                    args.adapter_params_json, 
+                    args.adapter_layers_json
+                )
+                
+                if DEBUG:   
+                    print("Adapter injection process finished.")
                 freeze_model_except_adapters(adapted_model)
                 
-                print("ADAPTER MODEL ARCHITECTURE")
+                if DEBUG:
+                    print(">Non-adapter layers are frozn")
+                print("[ADAPTED MODEL ARCHITECTURE]\n")
                 print(adapted_model)
 
                 # print trainable parameters number.
@@ -181,31 +216,46 @@ def main():
                 trainable_params_original = sum(p.numel() for p in original_model.parameters() if p.requires_grad)
                 print(f"Number of trainable parameters in the original model: {trainable_params_original}")
 
-
             except Exception as e:
                 print(e)
-            args.perform_adapter_training = True
+
+            adapted_model = adapted_model.half() # for the injected layers also to have torch.float16 dtype
+
+        
             if args.perform_adapter_training:
                 if train_dataset is None or len(train_dataset) == 0:
-                    logger.warning("Adapter training requested, but train_dataset is empty or None. Skipping training.")
+                    print("Adapter training requested, but train_dataset is empty or None. Skipping training.")
                 else:
-                    logger.info(f"Performing adapter training using {len(train_dataset)} samples...")
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                    adapted_model.to(device)
-                    train_dataset_hf = train_dataset
-                    adapted_model = train_model_adapted_mistral(adapted_model, original_model,tokenizer, train_dataset_hf, args)
-                    logger.info("Adapter training finished.")
-                    # Save the adapter-injected model (adapter weights)
-                    finetuned_adapter_dir = os.path.join(args.eval_output_dir, "finetuned_adapter_model")
-                    os.makedirs(finetuned_adapter_dir, exist_ok=True)
-                    # Save the full model (including adapters)
-                    adapted_model.save_pretrained(finetuned_adapter_dir)
-                    tokenizer.save_pretrained(finetuned_adapter_dir)
-                    logger.info(f"Adapter-injected model saved to {finetuned_adapter_dir}")
+                    print(f"Performing adapter training using {len(train_dataset)} samples...")
+                    
+                    # # TODO: Uncomment this after checking evaluation
+                    # if args.model_name == "meta-llama/Llama-2-7b-chat-hf":
+                    #     adapted_model = train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_dataset, args, DEBUG=DEBUG)
+                    # elif args.model_name == "mistral-model-name # TODO:change this later":
+                    #     adapted_model = train_model_adapted_mistral(adapted_model, original_model, tokenizer, train_dataset, args)
+
+                    print("Adapters training finished.")
+                    
+
+                    # TODO: Uncomment this; I got disk space exceeded IO error 
+                    
+                    # # Save the adapter-injected model (adapter weights)
+                    # finetuned_adapter_dir = os.path.join(args.model_save_path, "finetuned_adapter_model")
+                    # os.makedirs(finetuned_adapter_dir, exist_ok=True)
+                   
+                    # # Save the full model (including adapters)
+                    # adapted_model.save_pretrained(finetuned_adapter_dir)
+                    # tokenizer.save_pretrained(finetuned_adapter_dir)
+                    # print(f"Adapter-injected model saved to {finetuned_adapter_dir}")
             else:
-                logger.info("Adapter training not requested (perform_adapter_training=False).")
+                print("Adapter training not requested (perform_adapter_training=False).")
         else:
-            logger.info("Adapter injection not requested (do_adapter_injection=False). Evaluating base model as 'adapted' model.")
+            print("Adapter injection not requested (do_adapter_injection=False). Evaluating base model as 'adapted' model.")
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        
         if adapted_model: 
             print("Evaluation of adapted model--------------------")
             run_evaluation_pipeline(
@@ -216,15 +266,17 @@ def main():
                 args=args,
                 output_suffix="adapted" 
             )
+
+            sys.exit()
         else:
-            logger.error("Adapted model was not loaded or created. Skipping evaluation for adapted model.")
-        del adapted_model 
+            print("Adapted model was not loaded or created. Skipping evaluation for adapted model.")
+        # del adapted_model 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception as e:
-        logger.error(f"Error during adapted model setup or evaluation: {e}", exc_info=True)
+        print(f"Error during adapted model setup or evaluation: {e}")
 
-    logger.info("--- Main Mistral Injection Script Finished ---")
+    print(f"--- Main {args.model_name} Injection Script Finished ---")
 
 if __name__ == "__main__":
-    main()
+    main(DEBUG=True)
