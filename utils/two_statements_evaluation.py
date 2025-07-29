@@ -14,20 +14,16 @@ from evaluator.generic_evaluator import GenericLLMEvaluator
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Try to use mmengine.ConfigDict, with a fallback to a basic dict wrapper
-try:
-    from mmengine.config import ConfigDict
-except ImportError:
-    logging.warning("mmengine.config.ConfigDict not found. Using a basic dict wrapper. Consider installing mmengine.")
-    class ConfigDict(dict):
-        def __getattr__(self, name):
-            try:
-                return self[name]
-            except KeyError:
-                raise AttributeError(name)
 
-        def __setattr__(self, name, value):
-            self[name] = value
+class ConfigDict(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        self[name] = value
 
 # Helper function to load OpenAI configuration
 def load_openai_config(config_path: str) -> dict:
@@ -142,7 +138,7 @@ def two_statement_postprocessor(judge_response_text: str) -> Dict[str, Any]:
 
 def evaluate_two_statements(
     input_dictionary: Dict[str, str],
-    openai_config_path: str = "evaluator/openai_config.yaml", # Relative to VLM_DCT_Adapter
+    openai_config_path: str = "config/openai_config.yaml", # Relative to VLM_DCT_Adapter
     judge_model_name: str = "gpt-4o",
     judge_system_prompt: Optional[str] = None,
     eval_output_dir: str = "./eval_results_two_statements"

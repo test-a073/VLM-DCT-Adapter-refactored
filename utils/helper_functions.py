@@ -1,10 +1,32 @@
+import os 
+import yaml 
+from typing import Dict, Any , List, Optional
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import argparse
+import torch
+import json
+from tqdm import tqdm
+from datasets import Dataset 
+import sys
+from evaluator.generic_evaluator import GenericLLMEvaluator
+import re
+
+class ConfigDict(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+    def __setattr__(self, name, value):
+        self[name] = value
+
 
 # --- Helper Functions (adapted from evaluation.py) ---
 def load_openai_config(config_path: str) -> dict:
     if os.path.exists(config_path):
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
-    logger.warning(f"OpenAI config file not found at {config_path}")
+    print(f"OpenAI config file not found at {config_path}")
     return {}
 
 def simple_text_summarizer_postprocessor(judge_response_text: str) -> Dict[str, Any]:
@@ -26,7 +48,7 @@ def simple_text_summarizer_postprocessor(judge_response_text: str) -> Dict[str, 
                     score = float(score_str)
                     break
                 except ValueError:
-                    logger.warning(f"Found score-like text \"{score_str}\" with keyword but failed to parse as float.")
+                    print(f"Found score-like text \"{score_str}\" with keyword but failed to parse as float.")
                     pass
         if score is not None:
             break
@@ -56,13 +78,13 @@ def simple_text_summarizer_postprocessor(judge_response_text: str) -> Dict[str, 
     return {"score": score, "raw_judge_response": judge_response_text}
 
 def generate_predictions(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model,
+    tokenizer,
     dataset_split,
     device: str,
     max_new_tokens: int = 512
 ) -> List[Dict[str, Any]]:
-    logger.info(f"Generating predictions for {len(dataset_split)} samples...")
+    print(f"Generating predictions for {len(dataset_split)} samples...")
     predictions_data = []
     for example in tqdm(dataset_split, desc="Generating Predictions"):
         conv_id = example.get("id", "unknown_id")
@@ -72,7 +94,7 @@ def generate_predictions(
         if not history or not isinstance(history, list) or not history[-1].get("user"):
             current_prompt_text = example.get("query", "") # Fallback if history is not as expected
             if not current_prompt_text:
-                 logger.warning(f"Skipping item {conv_id} due to missing user prompt in history or query field.")
+                 print(f"Skipping item {conv_id} due to missing user prompt in history or query field.")
                  predictions_data.append({
                     "id": conv_id, "task_category": example.get("task_category", "N/A"),
                     "model_input": "Error: Missing prompt", "prediction": "Error: Missing prompt",
@@ -87,7 +109,9 @@ def generate_predictions(
         model_input_text = current_prompt_text
 
         try:
+            
             inputs = tokenizer(model_input_text, return_tensors="pt", truncation=True, max_length=2048).to(device) # Added truncation
+            
             with torch.no_grad():
                 generated_ids = model.generate(
                     **inputs,
@@ -95,6 +119,8 @@ def generate_predictions(
                     do_sample=True, # Consistent with evaluation.py
                     pad_token_id=tokenizer.eos_token_id # Add pad_token_id for open-ended generation
                 )
+            
+            
             # Ensure decoding handles cases where input is part of the output
             # For instruct models, often the prompt is not repeated.
             # If prompt is repeated, use: result = tokenizer.decode(generated_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
@@ -115,7 +141,7 @@ def generate_predictions(
             })
         except Exception as e:
             print("Error: ",e)
-            logger.warning(f"Error generating prediction for ID {conv_id}: {e}")
+            print(f"Error generating prediction for ID {conv_id}: {e}")
             predictions_data.append({
                 "id": conv_id, "task_category": example.get("task_category", "N/A"),
                 "model_input": model_input_text, "prediction": f"Error: {e}",
@@ -144,7 +170,7 @@ def run_evaluation_pipeline(
     with open(predictions_output_filepath, 'w') as f:
         for item in generated_preds_list:
             f.write(json.dumps(item) + '\n')
-    logger.info(f"Predictions for {output_suffix} saved to {predictions_output_filepath}")
+    print(f"Predictions for {output_suffix} saved to {predictions_output_filepath}")
 
     # 2. Prepare dataset for evaluator
     dataset_for_eval_dict = {
@@ -164,11 +190,11 @@ def run_evaluation_pipeline(
             valid_predictions_count += 1
     
     if valid_predictions_count == 0:
-        logger.warning(f"No successful predictions to evaluate for {output_suffix}. Skipping evaluation.")
+        print(f"No successful predictions to evaluate for {output_suffix}. Skipping evaluation.")
         final_score_value = "N/A (No valid predictions)"
     else:
         eval_hf_dataset = Dataset.from_dict(dataset_for_eval_dict)
-        logger.info(f"Prepared {len(eval_hf_dataset)} samples for the evaluator for {output_suffix}.")
+        print(f"Prepared {len(eval_hf_dataset)} samples for the evaluator for {output_suffix}.")
 
         # 3. Configure and Run Evaluator
         openai_params = load_openai_config(args.openai_config_path)
@@ -202,24 +228,24 @@ def run_evaluation_pipeline(
             output_path=evaluator_output_path
         )
 
-        logger.info(f"Running evaluation with {args.evaluator_type} for {output_suffix}...")
+        print(f"Running evaluation with {args.evaluator_type} for {output_suffix}...")
         evaluation_results = evaluator.score(
             predictions=list(eval_hf_dataset["prediction"]),
             test_set=eval_hf_dataset
         )
-        logger.info(f"Raw Evaluation Results for {output_suffix}:")
+        print(f"Raw Evaluation Results for {output_suffix}:")
         try:
-            logger.info(json.dumps(evaluation_results, indent=4))
+            print(json.dumps(evaluation_results, indent=4))
         except TypeError:
-            logger.info(str(evaluation_results))
+            print(str(evaluation_results))
 
         final_score_value = "N/A"
         if isinstance(evaluation_results, dict) and "average_score" in evaluation_results:
             final_score_value = evaluation_results["average_score"]
             num_scored = evaluation_results.get('num_scored', 'N/A')
-            logger.info(f"Average Judge Score for {output_suffix}: {final_score_value:.2f} (Scored items: {num_scored})")
+            print(f"Average Judge Score for {output_suffix}: {final_score_value:.2f} (Scored items: {num_scored})")
         else:
-            logger.warning(f"Could not determine average_score from evaluation results for {output_suffix}.")
+            print(f"Could not determine average_score from evaluation results for {output_suffix}.")
 
 
     # 4. Save Score File
@@ -234,9 +260,9 @@ def run_evaluation_pipeline(
             f.write(f"Judge Model: {args.judge_model_name}\n")
             f.write(f"Evaluation Split Size: {len(eval_dataset) if eval_dataset is not None else 'N/A'}\n")
             f.write(f"Final Score: {final_score_value}\n")
-        logger.info(f"Evaluation score for {output_suffix} saved to {score_file_path}")
+        print(f"Evaluation score for {output_suffix} saved to {score_file_path}")
     except Exception as e:
-        logger.error(f"Failed to write score to file {score_file_path}: {e}", exc_info=True)
+        print(f"Failed to write score to file {score_file_path}: {e}")
     
     if isinstance(final_score_value, (float, int)):
         return float(final_score_value)

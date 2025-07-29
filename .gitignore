@@ -1,1 +1,2 @@
 config/openai_config.yaml
+**/__pycache__/**

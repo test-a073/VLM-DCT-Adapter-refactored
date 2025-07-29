@@ -24,7 +24,7 @@ train:
   lr: 0.0001
   num_workers: 0
   dataset_path: evaluator/benchmark_datasets/new_datasamples.jsonl
-  num_train_samples: -1
+  num_train_samples: -1 # -1 for entire dataset
 
 
 eval:
@@ -43,7 +43,7 @@ generation:
   max_seq_length: 1024
 
 openai:
-  config_path: evaluator/openai_config.yaml
+  config_path: config/openai_config.yaml
 
 save:
   model_save_path: output/

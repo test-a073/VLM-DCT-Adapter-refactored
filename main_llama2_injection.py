@@ -28,19 +28,6 @@ from runner.train import train_model_mistral , train_model_adapted_mistral, gene
 
 from utils.helper_functions import load_openai_config, simple_text_summarizer_postprocessor, generate_predictions, run_evaluation_pipeline
 
-class ConfigDict(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
-    def __setattr__(self, name, value):
-        self[name] = value
-
-# Setup basic logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 # --- Main Script Logic ---
 def main(DEBUG=False):
 
@@ -85,7 +72,7 @@ def main(DEBUG=False):
     # TODO: Check what following does
     args.adapter_lr = 1e-4
     args.learning_rate = 1e-4
-    args.adapter_epochs = 1
+    
 
     # New argument for full fine-tuning
     args.perform_full_finetune = config_data.get("train").get("perform_full_finetune")
@@ -94,6 +81,16 @@ def main(DEBUG=False):
 
     os.makedirs(args.model_save_path, exist_ok=True)
     os.makedirs(args.eval_output_dir, exist_ok=True)
+
+    with open(args.openai_config_path, "r") as file:
+        config = yaml.safe_load(file)
+
+    opeanai_api_key = config.get("OPENAI_API_KEY")
+    if not opeanai_api_key:
+        raise ValueError("API key not found in config.")
+
+    # Set environment variable
+    os.environ["OPENAI_API_KEY"] = opeanai_api_key
 
     # Load and prepare train_dataset
     print(f"Loading training dataset from {args.train_dataset_path}...")
@@ -143,7 +140,7 @@ def main(DEBUG=False):
     # 2. Load Tokenizer (shared for both models)
     try:
         if args.model_name in ["meta-llama/Llama-2-7b-chat-hf"]:
-            tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+            tokenizer = AutoTokenizer.from_pretrained(args.model_name, padding_side='left')
             if DEBUG:
                 print(f"Tokenizer is loaded")
     except Exception as e:
@@ -221,18 +218,16 @@ def main(DEBUG=False):
 
             adapted_model = adapted_model.half() # for the injected layers also to have torch.float16 dtype
 
-        
             if args.perform_adapter_training:
                 if train_dataset is None or len(train_dataset) == 0:
                     print("Adapter training requested, but train_dataset is empty or None. Skipping training.")
                 else:
                     print(f"Performing adapter training using {len(train_dataset)} samples...")
                     
-                    # # TODO: Uncomment this after checking evaluation
-                    # if args.model_name == "meta-llama/Llama-2-7b-chat-hf":
-                    #     adapted_model = train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_dataset, args, DEBUG=DEBUG)
-                    # elif args.model_name == "mistral-model-name # TODO:change this later":
-                    #     adapted_model = train_model_adapted_mistral(adapted_model, original_model, tokenizer, train_dataset, args)
+                    if args.model_name == "meta-llama/Llama-2-7b-chat-hf":
+                        adapted_model = train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_dataset, args, DEBUG=DEBUG)
+                    elif args.model_name == "mistral-model-name # TODO:change this later":
+                        adapted_model = train_model_adapted_mistral(adapted_model, original_model, tokenizer, train_dataset, args)
 
                     print("Adapters training finished.")
                     
@@ -266,8 +261,6 @@ def main(DEBUG=False):
                 args=args,
                 output_suffix="adapted" 
             )
-
-            sys.exit()
         else:
             print("Adapted model was not loaded or created. Skipping evaluation for adapted model.")
         # del adapted_model 
@@ -276,7 +269,7 @@ def main(DEBUG=False):
     except Exception as e:
         print(f"Error during adapted model setup or evaluation: {e}")
 
-    print(f"--- Main {args.model_name} Injection Script Finished ---")
+    print(f"--- Main {args.model_name} Adapter Injection Script Finished ---")
 
 if __name__ == "__main__":
     main(DEBUG=True)

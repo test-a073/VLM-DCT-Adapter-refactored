@@ -13,21 +13,16 @@ except ImportError:
 from datasets import Dataset
 # from mmengine.config import ConfigDict # Can be replaced by standard dict if preferred, but not strictly an OC dependency. Keeping for now for compatibility with existing configs.
 # For simplicity, we'll assume ConfigDict is available via mmengine or user installs it. If not, evaluation.py needs to pass plain dicts.
-try:
-    from mmengine.config import ConfigDict
-except ImportError:
-    # Define a dummy ConfigDict if mmengine is not available, to avoid crashing.
-    # User should install mmengine for full compatibility if using ConfigDicts in their configs.
-    logging.warning("mmengine.config.ConfigDict not found. Using a basic dict wrapper. Consider installing mmengine.")
-    class ConfigDict(dict):
-        def __getattr__(self, name):
-            try:
-                return self[name]
-            except KeyError:
-                raise AttributeError(name)
 
-        def __setattr__(self, name, value):
-            self[name] = value
+class ConfigDict(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        self[name] = value
 
 
 # Removed OpenCompass specific imports:
