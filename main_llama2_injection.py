@@ -16,7 +16,7 @@ from prettyprinter import pprint
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"  # Set to the GPU you want to use, or leave empty for all available GPUs
+os.environ["CUDA_VISIBLE_DEVICES"] = "6"  # Set to the GPU you want to use, or leave empty for all available GPUs
 # from evaluator.cascade_evaluator import CascadeEvaluator # If needed
 
 # # Import for Adapter
@@ -139,7 +139,7 @@ def main(DEBUG=False):
 
     # 2. Load Tokenizer (shared for both models)
     try:
-        if args.model_name in ["meta-llama/Llama-2-7b-chat-hf"]:
+        if args.model_name in ["meta-llama/Llama-2-7b-chat-hf","meta-llama/Llama-2-13b-chat-hf"]:
             tokenizer = AutoTokenizer.from_pretrained(args.model_name, padding_side='left')
             if DEBUG:
                 print(f"Tokenizer is loaded")
@@ -161,16 +161,22 @@ def main(DEBUG=False):
 
             torch.cuda.empty_cache()
             gc.collect()
-            original_model = AutoModelForCausalLM.from_pretrained(
-                args.model_name,
-                torch_dtype=torch.float16, 
-                device_map="cuda"
-                ).eval()
-            adapted_model = AutoModelForCausalLM.from_pretrained(
-                args.model_name,
-                torch_dtype=torch.float16, 
-                device_map="cuda"
-                ) 
+
+            CREATE_ORIGINAL_RESPONSE_PKL_FILE = True  # Set to True to generate original_results.pkl first
+            if CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+                original_model = AutoModelForCausalLM.from_pretrained(
+                    args.model_name,
+                    torch_dtype=torch.float16, 
+                    device_map="cuda"
+                    ).eval()
+            
+            elif not CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+                adapted_model = AutoModelForCausalLM.from_pretrained(
+                    args.model_name,
+                    torch_dtype=torch.float16, 
+                    device_map="cuda"
+                    ) 
+
             if DEBUG: 
                 print("> Model loaded")
             model_name_  = args.model_name.split("/")[1] # model name without organization name
@@ -189,34 +195,39 @@ def main(DEBUG=False):
                 if DEBUG:
                     print(f"{args.adapter_layers_json=}")
                     print(f"{args.adapter_params_json=}")
-                    
-                adapted_model = inject_adapters(
-                    adapted_model, 
-                    DCTAdapter, 
-                    args.adapter_params_json, 
-                    args.adapter_layers_json
-                )
+
+                if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:   
+                    adapted_model = inject_adapters(
+                        adapted_model, 
+                        DCTAdapter, 
+                        args.adapter_params_json, 
+                        args.adapter_layers_json
+                    )
                 
                 if DEBUG:   
                     print("Adapter injection process finished.")
-                freeze_model_except_adapters(adapted_model)
+
+                if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:   
+                    freeze_model_except_adapters(adapted_model)
                 
                 if DEBUG:
                     print(">Non-adapter layers are frozn")
                 print("[ADAPTED MODEL ARCHITECTURE]\n")
-                print(adapted_model)
+                if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:  
+                    print(adapted_model)
 
                 # print trainable parameters number.
-                trainable_params = sum(p.numel() for p in adapted_model.parameters() if p.requires_grad)
-                print(f"Number of trainable parameters in the adapted model: {trainable_params}")
+                if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:  
+                    trainable_params = sum(p.numel() for p in adapted_model.parameters() if p.requires_grad)
+                    print(f"Number of trainable parameters in the adapted model: {trainable_params}")
 
-                trainable_params_original = sum(p.numel() for p in original_model.parameters() if p.requires_grad)
-                print(f"Number of trainable parameters in the original model: {trainable_params_original}")
+                    trainable_params_original = sum(p.numel() for p in original_model.parameters() if p.requires_grad)
+                    print(f"Number of trainable parameters in the original model: {trainable_params_original}")
 
             except Exception as e:
                 print(e)
-
-            adapted_model = adapted_model.half() # for the injected layers also to have torch.float16 dtype
+            if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:  
+                adapted_model = adapted_model.half() # for the injected layers also to have torch.float16 dtype
 
             if args.perform_adapter_training:
                 if train_dataset is None or len(train_dataset) == 0:
@@ -224,8 +235,33 @@ def main(DEBUG=False):
                 else:
                     print(f"Performing adapter training using {len(train_dataset)} samples...")
                     
-                    if args.model_name == "meta-llama/Llama-2-7b-chat-hf":
-                        adapted_model = train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_dataset, args, DEBUG=DEBUG)
+                    if args.model_name in ["meta-llama/Llama-2-b-chat-hf", "meta-llama/Llama-2-13b-chat-hf"]:
+                        if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:  
+                        
+                            DEBUG=True
+                            adapted_model = train_model_adapted_llama_2(
+                                adapted_model=adapted_model,
+                                original_model= None,
+                                tokenizer=tokenizer, 
+                                train_dataset_hf=train_dataset,
+                                args=args, 
+                                DEBUG=DEBUG,
+                                CREATE_ORIGINAL_RESPONSE_PKL_FILE=CREATE_ORIGINAL_RESPONSE_PKL_FILE  
+                            )
+
+                        elif CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+                            adapted_model = train_model_adapted_llama_2(
+                                adapted_model=None,
+                                original_model= original_model,
+                                tokenizer=tokenizer, 
+                                train_dataset_hf=train_dataset,
+                                args=args, 
+                                DEBUG=DEBUG,
+                                CREATE_ORIGINAL_RESPONSE_PKL_FILE=True  
+                            )
+                            print("Done making the original_results.pkl file")
+                            sys.exit()
+                            
                     elif args.model_name == "mistral-model-name # TODO:change this later":
                         adapted_model = train_model_adapted_mistral(adapted_model, original_model, tokenizer, train_dataset, args)
 
@@ -249,7 +285,6 @@ def main(DEBUG=False):
         
         gc.collect()
         torch.cuda.empty_cache()
-
         
         if adapted_model: 
             print("Evaluation of adapted model--------------------")

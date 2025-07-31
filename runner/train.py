@@ -6,8 +6,10 @@ from runner.evaluate import evaluate_model
 from tqdm import tqdm
 import pickle
 import time
-
+import gc 
 from utils.two_statements_evaluation import evaluate_two_statements
+from pprint import pprint
+import sys
 
 def compute_log_prob_sum(model, input_ids, attention_mask, output_ids):
     # Compute total log prob of output_ids conditioned on input_ids
@@ -127,166 +129,47 @@ def compute_log_prob_sum(model, input_ids, attention_mask, output_ids):
 
 
 # Original - Dulanga
-# def compute_preference_loss(idx,adapted_model, original_model, tokenizer, input_ids, attention_mask, labels, logits, args,device="cuda"):
-#     """
-#     Computes the preference loss between the adapted model and the original model.
-#     """
-#     #open original_results.pkl
-#     original_results = None
-#     with open('original_results.pkl', 'rb') as f:
-#         original_results = pickle.load(f)
-#     with torch.no_grad():
-#         adapted_generated_ids = adapted_model.generate(
-#             input_ids=input_ids,
-#             attention_mask=attention_mask,
-#             max_new_tokens=args.max_new_tokens,
-#             do_sample=True, # Consistent with evaluation.py
-#             pad_token_id=tokenizer.eos_token_id # Add pad_token_id for open-ended generation
-#         )
-        
-#     # Ensure decoding handles cases where input is part of the output
-#     # For instruct models, often the prompt is not repeated.
-#     # If prompt is repeated, use: result = tokenizer.decode(generated_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-#     index = idx*args.batch_size
-#     # loss = torch.tensor(0.0, device=device, dtype=torch.float32)
-#     loss = 0
-    
-#     for adapted_generated_id, label, input_id in zip(adapted_generated_ids, labels, input_ids):
-
-#         try:
-
-#             adapted_result = tokenizer.decode(adapted_generated_id, skip_special_tokens=True)
-
-#             input_text = tokenizer.decode(input_id, skip_special_tokens=True)
-
-#             # gpt_answer = tokenizer.decode(label, skip_special_tokens=True)
-#             # A simple way to remove prompt if it's there, more robust methods might be needed
-#             if adapted_result.startswith(input_text):
-#                 adapted_answer = adapted_result[len(input_text):].strip()
-#             if original_results[index].startswith(input_text):    
-#                 original_answer = original_results[index][len(input_text):].strip()
-#             # else:
-#             # adapted_answer = adapted_result.strip()
-#             input_text = input_text.strip()
-#             # original_answer = original_results[index]
-
-#             # print("\nInput Text: ", input_text)
-#             # print("\n---------------------------------------\n\n")
-#             print("Adapted Answer: ", adapted_answer)
-
-#             # print("\n---------------------------------------\n\n")
-#             # print("Original Answer: ", original_answer)
-#             # print("\n****************************************************\n\n")
-
-#             sample_input = {
-#                 "query": input_text,
-#                 "response_A": adapted_answer,
-#                 "response_B": original_answer
-#             }
-#             json_judgment = evaluate_two_statements(sample_input)
-
-#             eval_A = json_judgment.get("evaluation_A", {"score": None, "explanation": "Not parsed"})
-#             eval_A_score = eval_A.get("score", None)
-
-#             eval_B = json_judgment.get("evaluation_B", {"score": None, "explanation": "Not parsed"})
-#             eval_B_score = eval_B.get("score", None)
-#             # print(eval_A_score,eval_B_score)  # Print the result for visibility
-
-#             # calculate loss to maximize the score of adapted model
-
-#             # get max log_softmax of the logits 
-#             original_answer_ids = tokenizer(original_answer, return_tensors="pt").input_ids.to(device)
-#             min_seq_len = min(logits.size(1), original_answer_ids.size(1))
-#             original_answer_ids = original_answer_ids[:, :min_seq_len]
-#             logits_trimmed = logits[:, :min_seq_len, :]
-#             adapted_log_prob = torch.max(logits_trimmed, dim=-1).values
-#             # print("Adapted Log Prob: ", adapted_log_prob.shape,logits.shape)
-
-#             #tokenize the original answer
-
-#             # print("Original Answer IDs: ", original_answer_ids.shape)
-#             # find the log prob of the original answer ids from logits
-
-
-#             original_log_prob = logits_trimmed.gather(dim=2, index=original_answer_ids.unsqueeze(-1)).squeeze(-1)
-#             # print("Original Log Prob: ", original_log_prob.shape)
-
-#             log_probA = adapted_log_prob.mean()
-#             log_probB = original_log_prob.mean()
-
-#             # loss = 0 #bug
-#             if eval_A_score == None:
-#                 eval_A_score = 0.0
-#             if eval_B_score == None:
-#                 eval_B_score = 0.0
-#             if eval_A_score is not None and eval_B_score is not None:
-#                 # loss = eval_B_score - eval_A_score  # We want adapted to be better than original
-                
-#                 # advantage = torch.tensor((eval_A_score - eval_B_score), device=device, dtype=torch.float32)
-#                 # advantage = torch.tanh(advantage)
-
-#                 # loss = -advantage*(log_probA-log_probB) #+ torch.tensor(0.00001, device=device, dtype=torch.float32)
-
-#                 # Working version
-#                 if eval_A_score > eval_B_score:
-#                     # If adapted model is better, we want to maximize its log prob
-#                     loss += -log_probA + log_probB
-#                 else:
-#                     # If original model is better, we want to minimize its log prob
-#                     loss += -log_probB + log_probA
-
-
-
-
-
-#             print("Adapted: ",eval_A_score, "Original: ", eval_B_score)
-#             index+=1
-#         except IndexError:
-#             print("List Index Out of Error - Preference Loss")
-#             pass 
-
-    
-
-#     return torch.tensor(float(loss), requires_grad=True, device=device)
-#     # print("Sample Input: ", sample_input)
-#     # compare the two strings
-
-# Sasika - I did these changes 
-import pickle
-import torch
-
-def compute_preference_loss(idx, adapted_model, original_model, tokenizer, input_ids, attention_mask, labels, logits, args, device="cuda"):
+def compute_preference_loss(idx,adapted_model, original_model, tokenizer, input_ids, attention_mask, labels, logits, args,device="cuda", DEBUG=False):
     """
     Computes the preference loss between the adapted model and the original model.
-    Adds detailed debug logging and error handling.
     """
-    # Load original results
-    with open('original_results.pkl', 'rb') as f:
-        original_results = pickle.load(f)
-
-    # print(f"[DEBUG] Loaded {len(original_results)} original results from 'original_results.pkl'")
-
-    # Calculate index for current batch
-    index = idx * args.batch_size
-    # print(f"[DEBUG] Starting index for current batch: {index}")
-
-    # Total loss (accumulator)
-    total_loss = 0
-
-    # Generate predictions from adapted model
+    #open original_results.pkl
+    original_results = None
+    try:
+        with open('original_results.pkl', 'rb') as f:
+            original_results = pickle.load(f)
+        print(f"[DEBUG] Loaded {len(original_results)} original results from pickle file")
+    except FileNotFoundError:
+        print("[ERROR] original_results.pkl not found! You need to generate it first.")
+        print("Set CREATE_ORIGINAL_RESPONSE_PKL_FILE=True and run the training script to generate original results.")
+        return torch.tensor(0.0, requires_grad=True, device=device)
+    except Exception as e:
+        print(f"[ERROR] Failed to load original_results.pkl: {e}")
+        return torch.tensor(0.0, requires_grad=True, device=device)
+    
     with torch.no_grad():
         adapted_generated_ids = adapted_model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=args.max_new_tokens,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
+            do_sample=True, # Consistent with evaluation.py
+            pad_token_id=tokenizer.eos_token_id # Add pad_token_id for open-ended generation
         )
-
+        
+    # Ensure decoding handles cases where input is part of the output
+    # For instruct models, often the prompt is not repeated.
+    # If prompt is repeated, use: result = tokenizer.decode(generated_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+    index = idx*args.batch_size
+    print(f"[DEBUG] Step {idx}, Starting index: {index}, Batch size: {args.batch_size}")
+    print(f"[DEBUG] Original results available: {len(original_results)}")
+    
+    # loss = torch.tensor(0.0, device=device, dtype=torch.float32)
+    loss = 0
+    
     for i, (adapted_generated_id, label, input_id) in enumerate(zip(adapted_generated_ids, labels, input_ids)):
         current_index = index + i
-        # print(f"\n[DEBUG] Processing sample {i} (global index {current_index})")
-
+        print(f"[DEBUG] Processing sample {i} in batch, global index: {current_index}")
+        
         if current_index >= len(original_results):
             print(f"[ERROR] Index {current_index} out of bounds for original_results (len={len(original_results)})")
             continue
@@ -294,15 +177,31 @@ def compute_preference_loss(idx, adapted_model, original_model, tokenizer, input
         try:
             adapted_result = tokenizer.decode(adapted_generated_id, skip_special_tokens=True)
             input_text = tokenizer.decode(input_id, skip_special_tokens=True)
+            
+            print(f"[DEBUG] Input text (first 100 chars): {input_text[:100]}...")
+            print(f"[DEBUG] Adapted result (first 100 chars): {adapted_result[:100]}...")
+
+            # gpt_answer = tokenizer.decode(label, skip_special_tokens=True)
+            # A simple way to remove prompt if it's there, more robust methods might be needed
+            if adapted_result.startswith(input_text):
+                adapted_answer = adapted_result[len(input_text):].strip()
+            else:
+                adapted_answer = adapted_result.strip()
+                print(f"[WARNING] Adapted result doesn't start with input text")
+                
             original_result = original_results[current_index]
+            print(f"[DEBUG] Original result (first 100 chars): {original_result[:100]}...")
+            
+            if original_result.startswith(input_text):    
+                original_answer = original_result[len(input_text):].strip()
+            else:
+                original_answer = original_result.strip()
+                print(f"[WARNING] Original result doesn't start with input text")
+            
+            input_text = input_text.strip()
 
-            # Remove the prompt if it appears in the generation
-            adapted_answer = adapted_result[len(input_text):].strip() if adapted_result.startswith(input_text) else adapted_result.strip()
-            original_answer = original_result[len(input_text):].strip() if original_result.startswith(input_text) else original_result.strip()
-
-            # print(f" Input Text: {input_text[:100]}...")  # truncate long text
-            # print(f"Adapted Answer: {adapted_answer[:100]}...")
-            # print(f"Original Answer: {original_answer[:100]}...")
+            print(f"[DEBUG] Extracted adapted answer: {adapted_answer[:100]}...")
+            print(f"[DEBUG] Extracted original answer: {original_answer[:100]}...")
 
             sample_input = {
                 "query": input_text,
@@ -310,46 +209,195 @@ def compute_preference_loss(idx, adapted_model, original_model, tokenizer, input
                 "response_B": original_answer
             }
 
+            print("[sample-input-debug]")
+            pprint(sample_input)
+            
+            # For now, let's skip the actual evaluation to debug the data flow
+            print(f"[DEBUG] Would evaluate but skipping for debugging...")
+            
+            # Temporary: return early to avoid the evaluation call
+            if DEBUG:
+                print("[DEBUG] Early return for debugging")
+                return torch.tensor(0.0, requires_grad=True, device=device)
+            
             json_judgment = evaluate_two_statements(sample_input)
-            eval_A = json_judgment.get("evaluation_A", {"score": 0.0})
-            eval_B = json_judgment.get("evaluation_B", {"score": 0.0})
-            eval_A_score = eval_A.get("score", 0.0) or 0.0
-            eval_B_score = eval_B.get("score", 0.0) or 0.0
 
-            print(f" Eval Scores -> Adapted: {eval_A_score}, Original: {eval_B_score}")
+            eval_A = json_judgment.get("evaluation_A", {"score": None, "explanation": "Not parsed"})
+            eval_A_score = eval_A.get("score", None)
 
-            # Convert original answer to token IDs
+            eval_B = json_judgment.get("evaluation_B", {"score": None, "explanation": "Not parsed"})
+            eval_B_score = eval_B.get("score", None)
+            # print(eval_A_score,eval_B_score)  # Print the result for visibility
+
+            # calculate loss to maximize the score of adapted model
+
+            # get max log_softmax of the logits 
             original_answer_ids = tokenizer(original_answer, return_tensors="pt").input_ids.to(device)
             min_seq_len = min(logits.size(1), original_answer_ids.size(1))
             original_answer_ids = original_answer_ids[:, :min_seq_len]
             logits_trimmed = logits[:, :min_seq_len, :]
-
             adapted_log_prob = torch.max(logits_trimmed, dim=-1).values
+            # print("Adapted Log Prob: ", adapted_log_prob.shape,logits.shape)
+
+            #tokenize the original answer
+
+            # print("Original Answer IDs: ", original_answer_ids.shape)
+            # find the log prob of the original answer ids from logits
+
+
             original_log_prob = logits_trimmed.gather(dim=2, index=original_answer_ids.unsqueeze(-1)).squeeze(-1)
+            # print("Original Log Prob: ", original_log_prob.shape)
 
             log_probA = adapted_log_prob.mean()
             log_probB = original_log_prob.mean()
 
-            if eval_A_score > eval_B_score:
-                # Adapted is better → reward adapted
-                sample_loss = -log_probA + log_probB
-            else:
-                # Original is better → penalize adapted
-                sample_loss = -log_probB + log_probA
+            # loss = 0 #bug
+            if eval_A_score == None:
+                eval_A_score = 0.0
+            if eval_B_score == None:
+                eval_B_score = 0.0
+            if eval_A_score is not None and eval_B_score is not None:
+                # loss = eval_B_score - eval_A_score  # We want adapted to be better than original
+                
+                # advantage = torch.tensor((eval_A_score - eval_B_score), device=device, dtype=torch.float32)
+                # advantage = torch.tanh(advantage)
 
-            total_loss += sample_loss
+                # loss = -advantage*(log_probA-log_probB) #+ torch.tensor(0.00001, device=device, dtype=torch.float32)
 
+                # Working version
+                if eval_A_score > eval_B_score:
+                    # If adapted model is better, we want to maximize its log prob
+                    loss += -log_probA + log_probB
+                else:
+                    # If original model is better, we want to minimize its log prob
+                    loss += -log_probB + log_probA
+
+            print("Adapted: ",eval_A_score, "Original: ", eval_B_score)
+            
         except IndexError as e:
             print(f"[ERROR] IndexError at sample {i}: {e}")
-            import sys
-            sys.exit()
+            break
         except Exception as e:
             print(f"[ERROR] Unexpected exception at sample {i}: {e}")
+            import traceback
+            traceback.print_exc()
+            break
+
+    return torch.tensor(float(loss), requires_grad=True, device=device)
+#     # print("Sample Input: ", sample_input)
+#     # compare the two strings
+
+# Sasika - I did these changes 
+import pickle
+import torch
+
+# def compute_preference_loss(idx, adapted_model, original_model, tokenizer, input_ids, attention_mask, labels, logits, args, device="cuda", DEBUG=False):
+#     """
+#     Computes the preference loss between the adapted model and the original model.
+#     Adds detailed debug logging and error handling.
+#     """
+#     # Load original results
+#     with open('original_results.pkl', 'rb') as f:
+#         original_results = pickle.load(f)
+
+#     # print(f"[DEBUG] Loaded {len(original_results)} original results from 'original_results.pkl'")
+
+#     # Calculate index for current batch
+#     index = idx * args.batch_size
+#     # print(f"[DEBUG] Starting index for current batch: {index}")
+
+#     # Total loss (accumulator)
+#     total_loss = 0
+
+#     # Generate predictions from adapted model
+#     with torch.no_grad():
+#         adapted_generated_ids = adapted_model.generate(
+#             input_ids=input_ids,
+#             attention_mask=attention_mask,
+#             max_new_tokens=args.max_new_tokens,
+#             do_sample=True,
+#             pad_token_id=tokenizer.eos_token_id
+#         )
+
+#     for i, (adapted_generated_id, label, input_id) in enumerate(zip(adapted_generated_ids, labels, input_ids)):
+#         current_index = index + i
+#         # print(f"\n[DEBUG] Processing sample {i} (global index {current_index})")
+
+#         if current_index >= len(original_results):
+#             print(f"[ERROR] Index {current_index} out of bounds for original_results (len={len(original_results)})")
+#             continue
+
+#         try:
+#             adapted_result = tokenizer.decode(adapted_generated_id, skip_special_tokens=True)
+#             input_text = tokenizer.decode(input_id, skip_special_tokens=True)
+#             original_result = original_results[current_index]
+
+#             # Remove the prompt if it appears in the generation
+#             adapted_answer = adapted_result[len(input_text):].strip() if adapted_result.startswith(input_text) else adapted_result.strip()
+#             original_answer = original_result[len(input_text):].strip() if original_result.startswith(input_text) else original_result.strip()
+
+#             # print(f" Input Text: {input_text[:100]}...")  # truncate long text
+#             # print(f"Adapted Answer: {adapted_answer[:100]}...")
+#             # print(f"Original Answer: {original_answer[:100]}...")
+
+#             sample_input = {
+#                 "query": input_text,
+#                 "response_A": adapted_answer,
+#                 "response_B": original_answer
+#             }
+
+#             DEBUG = True
+
+            
+            
+
+#             if DEBUG:
+#                 print("[sample_input]")
+#                 pprint(sample_input)
+            
+            
+#             sys.exit()
+#             json_judgment = evaluate_two_statements(sample_input)
+
+#             eval_A = json_judgment.get("evaluation_A", {"score": 0.0})
+#             eval_B = json_judgment.get("evaluation_B", {"score": 0.0})
+#             eval_A_score = eval_A.get("score", 0.0) or 0.0
+#             eval_B_score = eval_B.get("score", 0.0) or 0.0
+
+#             print(f" Eval Scores -> Adapted: {eval_A_score}, Original: {eval_B_score}")
+
+#             # Convert original answer to token IDs
+#             original_answer_ids = tokenizer(original_answer, return_tensors="pt").input_ids.to(device)
+#             min_seq_len = min(logits.size(1), original_answer_ids.size(1))
+#             original_answer_ids = original_answer_ids[:, :min_seq_len]
+#             logits_trimmed = logits[:, :min_seq_len, :]
+
+#             adapted_log_prob = torch.max(logits_trimmed, dim=-1).values
+#             original_log_prob = logits_trimmed.gather(dim=2, index=original_answer_ids.unsqueeze(-1)).squeeze(-1)
+
+#             log_probA = adapted_log_prob.mean()
+#             log_probB = original_log_prob.mean()
+
+#             if eval_A_score > eval_B_score:
+#                 # Adapted is better → reward adapted
+#                 sample_loss = -log_probA + log_probB
+#             else:
+#                 # Original is better → penalize adapted
+#                 sample_loss = -log_probB + log_probA
+
+#             total_loss += sample_loss
+
+#         except IndexError as e:
+#             print(f"[ERROR] IndexError at sample {i}: {e}")
+#             import sys
+#             sys.exit()
+#         except Exception as e:
+#             print(f"[ERROR] Unexpected exception at sample {i}: {e}")
 
 
-    final_loss = torch.tensor(float(total_loss), requires_grad=True, device=device)
-    print(f"\n[DEBUG] Total computed loss: {final_loss.item():.4f}")
-    return final_loss
+#     final_loss = torch.tensor(float(total_loss), requires_grad=True, device=device)
+#     print(f"\n[DEBUG] Total computed loss: {final_loss.item():.4f}")
+#     return final_loss
 
 
 def freeze_model_except_adapters(model):
@@ -862,16 +910,28 @@ def generate_predictions_for_original_model(original_model, tokenizer, train_dat
         print("Original Answer: ", answer)
         original_results.append(answer)
 
-def train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_dataset_hf, args, DEBUG=False):
+def train_model_adapted_llama_2(
+        adapted_model, 
+        original_model, 
+        tokenizer, 
+        train_dataset_hf, 
+        args, 
+        DEBUG=False,
+        CREATE_ORIGINAL_RESPONSE_PKL_FILE=False
+):
+        
+    
     # TODO: to be completed
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    original_model.to(device)
-    original_model.eval() # Set model to training mode
+    if CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+        original_model.to(device)
+        original_model.eval() # Set model to training mode
 
-    adapted_model.to(device)
-    adapted_model.train() # Set model to training mode
+    if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+        adapted_model.to(device)
+        adapted_model.train() # Set model to training mode
 
     # Ensure tokenizer has a pad token. This is crucial for batching.
     if tokenizer.pad_token is None:
@@ -911,45 +971,52 @@ def train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_
     print(f"Setting up optimizer with learning rate: {args.learning_rate}...")
 
     print("trainable layers: ")
-    # Print layers which require gradients (i.e., will be updated during training)
-    for name, param in adapted_model.named_parameters():
-        if param.requires_grad:
-            print("✓", name)
+
+    if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+        # Print layers which require gradients (i.e., will be updated during training)
+        for name, param in adapted_model.named_parameters():
+            if param.requires_grad:
+                print("✓", name)
 
     # Count total and trainable parameters
-    total_params = sum(p.numel() for p in adapted_model.parameters())
-    trainable_params = sum(p.numel() for p in adapted_model.parameters() if p.requires_grad)
+    if not CREATE_ORIGINAL_RESPONSE_PKL_FILE:
+        total_params = sum(p.numel() for p in adapted_model.parameters())
+        trainable_params = sum(p.numel() for p in adapted_model.parameters() if p.requires_grad)
 
-    print(f"\nTrainable parameters: {trainable_params:,}")
-    print(f"Total parameters: {total_params:,}")
-    print(f"Percentage trainable: {100 * trainable_params / total_params:.2f}%")
+        print(f"\nTrainable parameters: {trainable_params:,}")
+        print(f"Total parameters: {total_params:,}")
+        print(f"Percentage trainable: {100 * trainable_params / total_params:.2f}%")
 
-    # Only pass trainable parameters to the optimizer
-    optimizer = AdamW(filter(lambda p: p.requires_grad, adapted_model.parameters()), lr=args.learning_rate, eps=1e-8) # Added eps for stability
+        # Only pass trainable parameters to the optimizer
+        optimizer = AdamW(filter(lambda p: p.requires_grad, adapted_model.parameters()), lr=args.learning_rate, eps=1e-8) # Added eps for stability
 
-    gradient_accumulation_steps = getattr(args, 'gradient_accumulation_steps', 1)
-    num_training_steps_per_epoch = len(train_dataloader) // gradient_accumulation_steps
-    if len(train_dataloader) % gradient_accumulation_steps != 0:
-        num_training_steps_per_epoch +=1 # account for the last partial step
+        gradient_accumulation_steps = getattr(args, 'gradient_accumulation_steps', 1)
+        num_training_steps_per_epoch = len(train_dataloader) // gradient_accumulation_steps
+        if len(train_dataloader) % gradient_accumulation_steps != 0:
+            num_training_steps_per_epoch +=1 # account for the last partial step
 
-    total_training_steps = num_training_steps_per_epoch * args.num_epochs
+        total_training_steps = num_training_steps_per_epoch * args.num_epochs
+        
+        num_warmup_steps = getattr(args, 'warmup_steps', 0)
+        if isinstance(num_warmup_steps, float): # if warmup_steps is a ratio
+            num_warmup_steps = int(total_training_steps * num_warmup_steps)
+
+        print(f"Total training steps: {total_training_steps}, Warmup steps: {num_warmup_steps}")
+        
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_training_steps
+        )
+        
+        logging_steps = getattr(args, 'logging_steps', 10)
+
+
+    USE_ORIGINAL_MODEL_FOR_COMPARISON = CREATE_ORIGINAL_RESPONSE_PKL_FILE # Run this before perference optimization to generate original_results.pkl
+
+    # Remove this problematic assert that prevents original results generation
+    # assert USE_ORIGINAL_MODEL_FOR_COMPARISON == False
     
-    num_warmup_steps = getattr(args, 'warmup_steps', 0)
-    if isinstance(num_warmup_steps, float): # if warmup_steps is a ratio
-        num_warmup_steps = int(total_training_steps * num_warmup_steps)
-
-    print(f"Total training steps: {total_training_steps}, Warmup steps: {num_warmup_steps}")
-    
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=total_training_steps
-    )
-    
-    logging_steps = getattr(args, 'logging_steps', 10)
-
-    USE_ORIGINAL_MODEL_FOR_COMPARISON = False # Run this before perference optimization to generate original_results.pkl
-
     if USE_ORIGINAL_MODEL_FOR_COMPARISON:
         print("Generating predictions using the original model before training...")
 
@@ -1001,105 +1068,113 @@ def train_model_adapted_llama_2(adapted_model, original_model, tokenizer, train_
         except AttributeError:
             print("[WARNING] Could not determine expected dataset size for sanity check.")
 
+        # Return early if we're just generating original results
+        print("[INFO] Original results generation complete. Exiting...")
+        return None
 
-    # 4. Training Loop
-    print(f"Starting training for {args.num_epochs} epochs...")
-    adapted_model.zero_grad() # Clear gradients before starting
-    print("Num Epochs:", args.num_epochs)
+    # Only proceed with training if we're not generating original results
+    if not USE_ORIGINAL_MODEL_FOR_COMPARISON:
 
-    for epoch in range(args.num_epochs):
-        print(f"--- Epoch {epoch+1}/{args.num_epochs} ---")
-        print("Epoch: ", epoch, " Out of: ", args.num_epochs)
-        epoch_total_loss = 0.0
-        
-        for step, batch in enumerate(train_dataloader):
-            if batch is None: # Skip if collate_fn returned None (e.g. empty batch after filtering)
-                continue
+        # 4. Training Loop
+        print(f"Starting training for {args.num_epochs} epochs...")
+        adapted_model.zero_grad() # Clear gradients before starting
+        print("Num Epochs:", args.num_epochs)
 
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device).to(adapted_model.dtype)
-            labels = batch['labels'].to(device)
-
-            # if DEBUG: 
-            #     for name, param in adapted_model.named_parameters():
-            #         print(f"{name:50} — dtype: {param.dtype}")
-
-            # Forward pass
-            outputs = adapted_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,  # must use the casted one
-                labels=labels
-            )
-
-
-            logits = outputs.logits
-            #compute log softmax
-            logits = torch.log_softmax(logits, dim=-1)
-
-            # outputs_orig = original_model(
-            #     input_ids=input_ids,
-            #     attention_mask=attention_mask,
-            #     labels=labels
-            # )
-
-            # print("[logits]")
-
-            loss = compute_preference_loss(step,adapted_model, original_model, tokenizer, input_ids, attention_mask,labels, logits, args,device=device)
+        for epoch in range(args.num_epochs):
+            print(f"--- Epoch {epoch+1}/{args.num_epochs} ---")
+            print("Epoch: ", epoch, " Out of: ", args.num_epochs)
+            epoch_total_loss = 0.0
             
-            # Convert loss to a tensor
-             
-            # TODO: Does this break the compute graph?
-            print("[loss]",loss)
+            for step, batch in enumerate(train_dataloader):
+                if batch is None: # Skip if collate_fn returned None (e.g. empty batch after filtering)
+                    continue
 
-            if gradient_accumulation_steps > 1:
-                loss = loss / gradient_accumulation_steps # Normalize loss
-            
-            # Backward pass
-            loss.backward()
-            
-            # Optimizer step (with gradient accumulation)
-            if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_dataloader):
-                torch.nn.utils.clip_grad_norm_(adapted_model.parameters(), 1.0) # Gradient clipping
-                optimizer.step()
-                scheduler.step() # Update learning rate
-                optimizer.zero_grad() # Clear gradients for the next accumulation
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device).to(adapted_model.dtype)
+                labels = batch['labels'].to(device)
 
-            epoch_total_loss += loss.item() * gradient_accumulation_steps # De-normalize for logging
+                # if DEBUG: 
+                #     for name, param in adapted_model.named_parameters():
+                #         print(f"{name:50} — dtype: {param.dtype}")
 
-            
-
-            start_time = time.time()
-
-            if (step + 1) % (logging_steps * gradient_accumulation_steps) == 0:
-                current_lr = scheduler.get_last_lr()[0]
-                elapsed = time.time() - start_time
-                step_time = elapsed * 1000 / logging_steps  # in ms
-                tokens_per_second = int(input_ids.numel() * logging_steps / elapsed)
-
-                grad_norm = 0.0
-                for p in adapted_model.parameters():
-                    if p.requires_grad and p.grad is not None:
-                        grad_norm += p.grad.data.norm(2).item() ** 2
-                grad_norm = grad_norm ** 0.5
-
-                print(
-                    f"step {step+1}/{len(train_dataloader)} | "
-                    f"loss {loss.item() * gradient_accumulation_steps:.6f} (+nanz)| "
-                    f"norm {grad_norm:.4f} (+nanz)| "
-                    f"lr {current_lr:.2e} | "
-                    f"{step_time:.2f} ms | "
-                    f"{tokens_per_second} tok/s",
-                    flush=True
+                # Forward pass
+                outputs = adapted_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,  # must use the casted one
+                    labels=labels
                 )
 
+
+                logits = outputs.logits
+                #compute log softmax
+                logits = torch.log_softmax(logits, dim=-1)
+
+                # outputs_orig = original_model(
+                #     input_ids=input_ids,
+                #     attention_mask=attention_mask,
+                #     labels=labels
+                # )
+
+                # print("[logits]")
+
+                loss = compute_preference_loss(step,adapted_model, original_model, tokenizer, input_ids, attention_mask,labels, logits, args,device=device, DEBUG=False)
+                
+                # Convert loss to a tensor
+                 
+                # TODO: Does this break the compute graph?
+                print("[loss]",loss)
+
+                if gradient_accumulation_steps > 1:
+                    loss = loss / gradient_accumulation_steps # Normalize loss
+                
+                # Backward pass
+                loss.backward()
+                
+                # Optimizer step (with gradient accumulation)
+                if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_dataloader):
+                    torch.nn.utils.clip_grad_norm_(adapted_model.parameters(), 1.0) # Gradient clipping
+                    optimizer.step()
+                    scheduler.step() # Update learning rate
+                    optimizer.zero_grad() # Clear gradients for the next accumulation
+
+                epoch_total_loss += loss.item() * gradient_accumulation_steps # De-normalize for logging
+
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+
                 start_time = time.time()
-            # break # remove this later
+
+                if (step + 1) % (logging_steps * gradient_accumulation_steps) == 0:
+                    current_lr = scheduler.get_last_lr()[0]
+                    elapsed = time.time() - start_time
+                    step_time = elapsed * 1000 / logging_steps  # in ms
+                    tokens_per_second = int(input_ids.numel() * logging_steps / elapsed)
+
+                    grad_norm = 0.0
+                    for p in adapted_model.parameters():
+                        if p.requires_grad and p.grad is not None:
+                            grad_norm += p.grad.data.norm(2).item() ** 2
+                    grad_norm = grad_norm ** 0.5
+
+                    print(
+                        f"step {step+1}/{len(train_dataloader)} | "
+                        f"loss {loss.item() * gradient_accumulation_steps:.6f} (+nanz)| "
+                        f"norm {grad_norm:.4f} (+nanz)| "
+                        f"lr {current_lr:.2e} | "
+                        f"{step_time:.2f} ms | "
+                        f"{tokens_per_second} tok/s",
+                        flush=True
+                    )
+
+                    start_time = time.time()
+                # break # remove this later
 
 
-        avg_epoch_loss = epoch_total_loss / len(train_dataloader)
-        print(f"--- End of Epoch {epoch+1}, Average Loss: {avg_epoch_loss:.4f} ---")
-    
-    return adapted_model
+            avg_epoch_loss = epoch_total_loss / len(train_dataloader)
+            print(f"--- End of Epoch {epoch+1}, Average Loss: {avg_epoch_loss:.4f} ---")
+
+        return adapted_model
 
     
 def train_model_adapted_mistral(adapted_model, original_model, tokenizer, train_dataset_hf, args):
@@ -1338,5 +1413,7 @@ def train_model_adapted_mistral(adapted_model, original_model, tokenizer, train_
 
         avg_epoch_loss = epoch_total_loss / len(train_dataloader)
         print(f"--- End of Epoch {epoch+1}, Average Loss: {avg_epoch_loss:.4f} ---")
+
+    
 
     return adapted_model
